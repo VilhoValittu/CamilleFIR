@@ -70,4 +70,20 @@ Performance Optimization: Switched plotting calculations to FFT-based methods fo
 
 Enhanced UX: Dedicated input fields for up to 5 crossovers, toggleable magnitude correction, and built-in default house curves.
 
-Dependencies added: pywebio, matplotlib
+Markdown
+
+## Installation & Running
+
+### Prerequisites
+* Python 3.8 or newer
+
+### 1. Install Dependencies
+Run the following command to install the required libraries:
+```bash
+pip install -r requirements.txt
+2. Run the Application
+Start the program with Python. This will launch a local web server and open the interface in your browser.
+
+Bash
+
+python CamillaFIR.py
