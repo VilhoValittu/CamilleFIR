@@ -84,6 +84,5 @@ pip install -r requirements.txt
 2. Run the Application
 Start the program with Python. This will launch a local web server and open the interface in your browser.
 
-Bash
-
+### 2. Run program
 python CamillaFIR.py
