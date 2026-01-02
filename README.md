@@ -74,8 +74,12 @@ CamillaFIR v1.1.0 - Auto-Save Update
 ​Description:
 This release focuses on usability improvements by introducing persistent settings.
 ​Changelog:
-​Feature: Automatic Configuration Saving: The program now automatically saves all user settings (crossovers, house curve selection, gain, etc.) to a config.json file. Your settings will be remembered the next time you launch the application.
+
+​Feature: Automatic Configuration Saving: 
+The program now automatically saves all user settings (crossovers, house curve selection, gain, etc.) to a config.json file. Your settings will be remembered the next time you launch the application.
+
 ​Safety: Retains the 8dB Safety Limit introduced in v1.0.1 (hard limit for magnitude boosting to protect equipment).
+
 ​Performance: Includes the FFT-based plotting optimization for instant graph generation with high tap counts.
 
 ```markdown
