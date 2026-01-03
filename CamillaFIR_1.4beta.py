@@ -1,4 +1,4 @@
-import numpy as np
+aimport numpy as np
 import scipy.signal
 import scipy.io.wavfile
 import scipy.fft
@@ -22,7 +22,7 @@ from pywebio import start_server, config
 CONFIG_FILE = 'config.json'
 FINE_TUNE_LIMIT = 45.0
 MAX_SAFE_BOOST = 8.0
-VERSION = "v1.4.2 (English Standard)"
+VERSION = "v1.4.beta"
 PROGRAM_NAME = "CamillaFIR"
 
 # --- HELPER: STATUS UPDATE ---
