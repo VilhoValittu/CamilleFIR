@@ -1,167 +1,109 @@
-# CamillaFIR
-Automated FIR filter generator for REW measurements. Creates phase-linear correction files (WAV/CSV) for Equalizer APO, Roon, and CamillaDSP. Features crossover linearization, smart room correction, and safe subsonic filtering. By VilhoValittu &amp; GeminiPro. Inspired by OCA https://www.youtube.com/@ocaudiophile
+Tässä on kattava ja ammattimainen **README.md** -pohja GitHub-repositoriollesi. Se korostaa ohjelman uusia "Pro-tason" ominaisuuksia (v1.3.0), kuten FDW:tä ja psykoakustista silotusta.
 
-Hi everyone,
+Voit kopioida tämän tekstin suoraan GitHubiin.
 
-I wanted to share a new tool developed by "VilhoValittu & GeminiPro". It's a Python-based utility designed to automate the creation of FIR correction filters from REW measurements.
+---
 
-Creating phase-linear FIR filters manually (e.g., in rePhase) acts as a bottleneck for many. This tool aims to streamline the process, creating convolution files ready for Equalizer APO, Roon, CamillaDSP, etc., in seconds.
+# 🎛️ CamillaFIR
 
-Key Features:
+**CamillaFIR** is a Python-based tool designed to generate high-quality Finite Impulse Response (FIR) correction filters for active loudspeakers. It bridges the gap between raw measurements (from REW) and convolution engines like **CamillaDSP**, **Equalizer APO**, or **MiniDSP**.
 
-Automated Phase Linearization: Corrects the phase shift of your existing IIR crossovers (just input freq & slope).
+Unlike simple "invert the curve" tools, CamillaFIR uses advanced DSP techniques—such as **Frequency Dependent Windowing (FDW)**, **Hilbert Transforms**, and **Psychoacoustic Smoothing**—to create filters that sound natural, phase-linear, and transient-perfect.
 
-Smart Room Correction: Applies frequency response correction based on a target House Curve with adjustable max boost limits.
+---
 
-Configurable Taps: Choose from 2048 up to 131,072 taps (balancing latency vs. bass resolution).
+## ✨ Key Features
 
-Safe Subsonic Filter: Optional High Pass Filter (10-60Hz) implemented as Minimum Phase to prevent pre-ringing artifacts in the bass.
+### 1. Advanced Phase Linearization 🧠
 
-Auto-Leveling: Matches the House Curve to your speaker's natural response to avoid drastic gain jumps.
+CamillaFIR doesn't just flatten the phase; it understands it.
 
-Output Formats:
+* **Hilbert Transform Analysis:** Automatically separates the measured phase into **Minimum Phase** (system/driver behavior) and **Excess Phase** (time delays/crossovers).
+* **Frequency Dependent Windowing (FDW):** Applies variable windowing to the Excess Phase. It corrects phase anomalies in the bass (room modes) while leaving the treble "air" and natural reflections untouched to avoid pre-ringing artifacts.
+* **Crossover Reversal:** Mathematically "unwinds" the phase shift caused by your analog or IIR crossovers (Linkwitz-Riley, Butterworth, etc.), resulting in a perfect step response.
 
-WAV: 32-bit float (Mono or Stereo files).
+### 2. Psychoacoustic Magnitude Correction 👂
 
-CSV: Ready-to-use coefficients for Equalizer APO.
+* **Smart Smoothing:** Uses a **Psychoacoustic Smoothing** algorithm that preserves audible peaks (which need cutting) but fills in narrow dips (which shouldn't be boosted). This saves amplifier headroom and prevents unnatural sound.
+* **House Curves:** Built-in "Harman-style" house curve or upload your own custom target curve.
+* **Safety Limits:** Hard-coded **8dB safety limit** on boosts to protect your drivers and amplifiers, regardless of user input.
 
-Deep Dive: How the Phase Correction Works Unlike simple auto-EQs that try to flatten the measured phase blindly (often causing severe pre-ringing artifacts), this tool uses a Hybrid Approach:
+### 3. Modern Web GUI 🖥️
 
-Theoretical Linearization: First, it calculates the mathematical inverse of the IIR crossovers you specify (e.g., LR4 @ 2000Hz). This unwraps the phase shift caused by your existing crossovers purely based on math, guaranteeing zero artifacts for this part of the correction.
+* **Browser-Based Interface:** No command-line arguments needed. Just launch and configure in your web browser.
+* **Auto-Save:** Remembers your crossovers, gain settings, and preferences automatically (`config.json`).
+* **Instant Analysis:** Displays predicted **Frequency Response** and **Phase Response** graphs immediately after generation.
+* **Smart Plotting:** Automatically estimates and removes IR delay for readable, unwrapped phase plots.
 
-Measured Fine-Tuning: It then looks at your actual measurement data (Excess Phase). It applies a secondary correction to align the driver's natural phase deviations.
+### 4. Flexible Output 💾
 
-Safety Clamping: This fine-tuning is strictly clamped (max ±45 degrees). This ensures the tool never tries to correct room reflections or measurement noise, which is the #1 cause of bad-sounding FIR filters.
+* **Dual Channel:** Processes Left and Right channels independently in one go.
+* **Formats:** Exports to `.wav` (Stereo/Mono) or `.csv` text files.
+* **Universal:** Works with any sample rate (44.1k, 48k, 96k...) and tap count (up to 262k+).
 
-The result is a step response that looks like a single coherent spike, improving transient attack and soundstage depth without the "processed" sound of aggressive room correction.
+---
 
-Workflow:
-
-Measure in REW.
-
-Export measurements as text files (L.txt & R.txt) into the same folder as the tool.
-
-Note: If using a House Curve, place that .txt file in the same folder as well.
-
-Run the generator.
-
-Select your preferences (Sample rate, House curve, Output format).
-
-Load the generated file into your convolution engine.
-
-
-Feedback is welcome!
-
-EXE file available https://drive.google.com/drive/folders/1AkESLDo-UhPqxDCdaZuXE6u8-H4EDuOI?usp=sharing
-
-CamillaFIR v1.0 - The GUI & Analysis Update
-
-This major release transitions CamillaFIR from a CLI utility to a full-featured graphical application with built-in analysis tools.
-
-Key Changes:
-
-Web-Based GUI: Now uses a browser-based interface for easy configuration of all parameters (Crossovers, House Curves, Taps, etc.).
-
-Prediction Plots: Generates visual feedback after processing, showing both Magnitude and Phase responses (Original vs. Predicted).
-
-Smart Phase Analysis: The phase plot automatically calculates and removes IR delay (centers the peak), allowing for a readable, unwrapped view of phase linearization.
-
-Performance Optimization: Switched plotting calculations to FFT-based methods for instant rendering even at high tap counts (e.g., 131k).
-
-Enhanced UX: Dedicated input fields for up to 5 crossovers, toggleable magnitude correction, and built-in default house curves.
-
-CamillaFIR v1.1.0 - Auto-Save Update
-​Description:
-This release focuses on usability improvements by introducing persistent settings.
-​Changelog:
-
-​Feature: Automatic Configuration Saving: 
-The program now automatically saves all user settings (crossovers, house curve selection, gain, etc.) to a config.json file. Your settings will be remembered the next time you launch the application.
-
-​Safety: Retains the 8dB Safety Limit introduced in v1.0.1 (hard limit for magnitude boosting to protect equipment).
-
-​Performance: Includes the FFT-based plotting optimization for instant graph generation with high tap counts.
-
-v1.2.1 - UI Polish & Status Bar Fixes
-
-Description
-This release improves the visual feedback of the application and fixes a cosmetic issue with status text updates during processing.
-
-Changelog:
-
-FIX: Resolved an issue where progress bar status messages (e.g., "Reading files...") would stack vertically instead of updating.
-
-UI: Status messages now update dynamically in-place for a cleaner look.
-
-UI: Added a clear "Done!" confirmation message upon completion.
-
-Code: Refactored status message management into a dedicated update_status() helper function.
-
-```markdown
-# CamillaFIR
-
-**CamillaFIR** is a Python-based tool for generating FIR filters for speaker correction. It features a graphical user interface (GUI), phase linearization, house curve application, and predicted response analysis.
-
-## 🚀 Installation & Running
+## 🚀 Getting Started
 
 ### Prerequisites
-* **Python 3.8** or newer.
 
----
+* Python 3.8 or newer
+* Measurements exported from **REW (Room EQ Wizard)** as text files (`.txt`).
 
-### 1. Install Python
+### Installation
 
-If you don't have Python installed, follow these steps:
-
-#### 🪟 Windows
-1. Download the installer from [python.org](https://www.python.org/downloads/).
-2. Run the installer.
-3. **Important:** Check the box **"Add Python to PATH"** at the bottom of the installer before clicking "Install Now".
-
-#### 🍎 macOS
-The easiest way is using Homebrew. Open your Terminal and run:
-```bash
-brew install python
-
-```
-
-Alternatively, download the installer from [python.org](https://www.python.org/downloads/macos/).
-
-#### 🐧 Linux
-
-Run the following in your terminal (Ubuntu/Debian):
-
-```bash
-sudo apt update
-sudo apt install python3 python3-pip
-
-```
-
----
-
-### 2. Install Dependencies
-
-Open your terminal or command prompt in the project folder and run:
-
+1. Clone the repository or download the source code.
+2. Install the required dependencies:
 ```bash
 pip install -r requirements.txt
 
 ```
 
-*(Note: On Linux/macOS, you might need to use `pip3` instead of `pip`).*
 
----
+*(Dependencies: `numpy`, `scipy`, `matplotlib`, `pywebio`)*
 
-### 3. Run the Application
+### Usage
 
-Start the program by running the script. It will launch a local web server and automatically open the interface in your default browser.
-
+1. Run the application:
 ```bash
 python CamillaFIR.py
 
 ```
 
-*(Note: On Linux/macOS, you might need to use `python3 CamillaFIR.py`).*
+
+2. Your browser will open automatically.
+3. **Upload** your Left and Right measurement files.
+4. **Configure** your target settings (House curve, Crossovers, FDW cycles).
+5. **Generate** and download your FIR filters.
+
+---
+
+## ⚙️ DSP Pipeline Explained
+
+How CamillaFIR processes your sound:
+
+1. **Input:** Reads raw magnitude and phase data from measurement files.
+2. **Smoothing:** Applies Psychoacoustic smoothing to the magnitude response.
+3. **Normalization:** Aligns the Target Curve (House Curve) to match the measurement level at the correction limit.
+4. **Phase Extraction:** Calculates the theoretical **Minimum Phase** from the smoothed magnitude using the Hilbert Transform (Cepstral method).
+5. **Excess Phase Calculation:** Subtracts Minimum Phase from the Measured Phase to isolate time-domain errors.
+6. **FDW Processing:** Applies Frequency Dependent Windowing to the Excess Phase to distinguish direct sound from room reflections.
+7. **Filter Generation:** Combines the EQ curve (Magnitude) and the Corrected Phase (FDW + Crossover reversal) into a complex signal.
+8. **IFFT:** Performs an Inverse FFT to create the time-domain Impulse Response (the FIR filter).
+
+---
+
+## 📦 Building a Standalone EXE (Windows)
+
+If you want to distribute the tool as a single executable file without requiring Python installed:
+
+```bash
+python -m PyInstaller --noconfirm --onefile --console --name "CamillaFIR_1.3.0" --hidden-import=pywebio.platform.tornado --hidden-import=matplotlib --hidden-import=matplotlib.backends.backend_agg CamillaFIR.py
 
 ```
 
+---
+
+## License
+Exe-file : https://drive.google.com/drive/folders/1AkESLDo-UhPqxDCdaZuXE6u8-H4EDuOI
+MIT License. Feel free to fork, modify, and contribute!
