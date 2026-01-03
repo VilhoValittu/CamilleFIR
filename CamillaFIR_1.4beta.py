@@ -22,7 +22,7 @@ from pywebio import start_server, config
 CONFIG_FILE = 'config.json'
 FINE_TUNE_LIMIT = 45.0
 MAX_SAFE_BOOST = 8.0
-VERSION = "v1.4beta"
+VERSION = "v1.4.2 (English Standard)"
 PROGRAM_NAME = "CamillaFIR"
 
 # --- HELPER: STATUS UPDATE ---
@@ -184,4 +184,352 @@ def generate_filter(freqs, raw_mags, raw_phases, crossovers,
     # 2. PHASE (Minimum & Excess)
     meas_min_phase_rad = calculate_minimum_phase(10**(meas_mags/20.0))
     meas_phase_rad_raw = np.deg2rad(interpolate_response(freqs, raw_phases, freq_axis))
-    meas_phase_rad_unwrapped = np.unwrap(meas_phase_rad
+    meas_phase_rad_unwrapped = np.unwrap(meas_phase_rad_raw)
+    excess_phase_rad = meas_phase_rad_unwrapped - meas_min_phase_rad
+    
+    excess_phase_deg = np.rad2deg(excess_phase_rad)
+    excess_phase_fdw_rad = apply_fdw_smoothing(freq_axis, excess_phase_deg, fdw_cycles)
+    
+    theoretical_xo_phase = calculate_theoretical_phase(freq_axis, crossovers)
+    
+    # 3. TARGET CURVE CALCULATION
+    target_mags = np.zeros_like(freq_axis)
+    use_house_curve = (house_freqs is not None and house_mags is not None)
+    
+    if use_house_curve:
+        hc_interp = interpolate_response(house_freqs, house_mags, freq_axis)
+        
+        # Calculate Average Levels in Reference Range (e.g., 500-2000Hz)
+        ref_mask = (freq_axis >= ref_c_min) & (freq_axis <= ref_c_max)
+        if np.sum(ref_mask) > 0:
+            avg_meas = np.mean(meas_mags[ref_mask])
+            avg_hc = np.mean(hc_interp[ref_mask])
+            offset = avg_meas - avg_hc
+        else:
+            idx_align = np.argmin(np.abs(freq_axis - mag_c_max))
+            offset = meas_mags[idx_align] - hc_interp[idx_align]
+            
+        target_mags = hc_interp + offset
+    
+    hpf_complex = np.ones_like(freq_axis, dtype=complex)
+    if hpf_settings and hpf_settings['enabled']:
+        b, a = scipy.signal.butter(hpf_settings['order'], 2 * np.pi * hpf_settings['freq'], btype='high', analog=True)
+        w, h = scipy.signal.freqs(b, a, worN=2 * np.pi * freq_axis)
+        hpf_complex = h
+        hpf_complex[0] = 0.0
+
+    gain_linear = np.ones_like(freq_axis)
+    phase_corr_rad = np.zeros_like(freq_axis)
+    limit_rad = np.deg2rad(fine_phase_limit)
+    
+    for i, f in enumerate(freq_axis):
+        if f > 0:
+            # Magnitude Correction (Only applied within Correction Range)
+            g_db = 0.0
+            if enable_mag_correction and use_house_curve and (mag_c_min <= f <= mag_c_max):
+                safe_max_boost = min(max_boost_db, MAX_SAFE_BOOST)
+                g_db = np.clip(target_mags[i] - meas_mags[i], -15.0, safe_max_boost)
+            g_db += global_gain_db
+            gain_linear[i] = 10.0 ** (g_db / 20.0)
+            
+            # Phase Correction
+            fine_correction = 0.0
+            if phase_c_min <= f <= phase_c_max:
+                fine_correction = np.clip(-excess_phase_fdw_rad[i], -limit_rad, limit_rad)
+            phase_corr_rad[i] = -theoretical_xo_phase[i] + fine_correction
+
+    correction_complex = gain_linear * np.exp(1j * phase_corr_rad)
+    final_complex = correction_complex * hpf_complex
+    
+    final_phase_unwrapped = np.unwrap(np.angle(final_complex))
+    gd_samples = -np.gradient(final_phase_unwrapped) * (len(freq_axis) / np.pi) 
+    gd_ms = (gd_samples / fs) * 1000.0
+    mask = (freq_axis >= 20) & (freq_axis <= 20000)
+    if np.sum(mask) > 0:
+        valid_gd = gd_ms[mask]
+        gd_min, gd_max = np.min(valid_gd), np.max(valid_gd)
+    else:
+        gd_min, gd_max = 0.0, 0.0
+
+    impulse = scipy.fft.irfft(final_complex, n=n_fft)
+    window = scipy.signal.windows.blackman(n_fft)
+    return np.roll(impulse, n_fft // 2) * window, gd_min, gd_max
+
+def save_summary(filename, settings, l_stats, r_stats):
+    with open(filename, 'w') as f:
+        f.write(f"=== {PROGRAM_NAME} - Filter Generation Summary ===\n")
+        f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        f.write("--- Settings ---\n")
+        for key, val in settings.items():
+            if 'file' not in key:
+                f.write(f"{key}: {val}\n")
+        f.write("\n--- Analysis (20Hz - 20kHz) ---\n")
+        f.write(f"Left Channel GD: {l_stats['gd_min']:.2f} ms to {l_stats['gd_max']:.2f} ms\n")
+        f.write(f"Right Channel GD: {r_stats['gd_min']:.2f} ms to {r_stats['gd_max']:.2f} ms\n")
+
+def generate_prediction_plot(orig_freqs, orig_mags, orig_phases, filt_ir, fs, title):
+    try:
+        n_fft = len(filt_ir)
+        freq_axis_lin = scipy.fft.rfftfreq(n_fft, d=1/fs)
+        h_filt_complex = scipy.fft.rfft(filt_ir)
+        orig_mags_lin = np.interp(freq_axis_lin, orig_freqs, orig_mags)
+        orig_phases_lin = np.interp(freq_axis_lin, orig_freqs, orig_phases)
+        orig_complex_lin = 10**(orig_mags_lin/20.0) * np.exp(1j * np.deg2rad(orig_phases_lin))
+        total_complex = orig_complex_lin * h_filt_complex
+        ir_total = scipy.fft.irfft(total_complex, n=n_fft)
+        peak_idx = np.argmax(np.abs(ir_total))
+        ir_centered = np.roll(ir_total, -peak_idx)
+        total_complex_centered = scipy.fft.rfft(ir_centered)
+        final_mags_lin = 20 * np.log10(np.abs(total_complex) + 1e-12)
+        final_phases_rad = np.angle(total_complex_centered)
+        final_phases_deg = np.rad2deg(final_phases_rad)
+        final_mags_plot = np.interp(orig_freqs, freq_axis_lin, final_mags_lin)
+        final_phases_plot = np.interp(orig_freqs, freq_axis_lin, final_phases_deg)
+        _, plot_phase_orig = apply_smoothing_std(orig_freqs, orig_mags, orig_phases, 1.0)
+        _, plot_phase_pred = apply_smoothing_std(orig_freqs, final_mags_plot, final_phases_plot, 1.0)
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+        ticks_val = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
+        ticks_lab = ['20', '50', '100', '200', '500', '1k', '2k', '5k', '10k', '20k']
+        x_min = max(orig_freqs[0], 10)
+        x_max = orig_freqs[-1]
+        ax1.semilogx(orig_freqs, orig_mags, label='Original', color='blue', alpha=0.5)
+        ax1.semilogx(orig_freqs, final_mags_plot, label='Predicted', color='orange', linewidth=2)
+        ax1.set_title(f"{title} - Frequency Response")
+        ax1.set_ylabel("Amplitude (dB)")
+        ax1.grid(True, which="both", alpha=0.3)
+        ax1.legend()
+        ax1.set_xlim(x_min, x_max)
+        ax1.set_xticks(ticks_val)
+        ax1.set_xticklabels(ticks_lab)
+        plot_phase_orig_wrapped = (plot_phase_orig + 180) % 360 - 180
+        plot_phase_pred_wrapped = (plot_phase_pred + 180) % 360 - 180
+        ax2.semilogx(orig_freqs, plot_phase_orig_wrapped, label='Original (Smoothed)', color='blue', alpha=0.5)
+        ax2.semilogx(orig_freqs, plot_phase_pred_wrapped, label='Predicted (Delay Removed)', color='orange', linewidth=2)
+        ax2.set_title("Phase Response (Peak Aligned)")
+        ax2.set_xlabel("Frequency (Hz)")
+        ax2.set_ylabel("Phase (deg)")
+        ax2.grid(True, which="both", alpha=0.3)
+        ax2.set_xlim(x_min, x_max)
+        ax2.set_xticks(ticks_val)
+        ax2.set_xticklabels(ticks_lab)
+        ax2.set_ylim(-360, 360)
+        ax2.set_yticks(np.arange(-360, 361, 90))
+        ax2.legend()
+        plt.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png')
+        buf.seek(0)
+        plt.close(fig)
+        return buf.getvalue()
+    except Exception as e:
+        print(f"Plotting Error: {e}")
+        return None
+
+# --- MAIN GUI APP ---
+@config(theme="dark")
+def main():
+    put_markdown(f"# 🎛️ {PROGRAM_NAME} {VERSION}")
+    put_markdown("### By VilhoValittu & GeminiPro")
+
+    # --- GUIDE SECTION (English) ---
+    put_collapse("❓ Guide: Choosing Sample Rate and Taps", [
+        put_markdown("""
+        **Rule of Thumb: When Sample Rate doubles, Taps should also double.**
+
+        The precision of an FIR filter in the bass region (below 100 Hz) depends directly on the ratio: `Sample Rate / Taps`.
+        If you use a high Sample Rate (e.g., 192 kHz) but keep a low Tap count (65k), the filter resolution decreases, and bass correction becomes inaccurate.
+
+        **Recommended Taps values:**
+        * **44.1 / 48 kHz:** 65,536 taps (Standard, good resolution)
+        * **88.2 / 96 kHz:** 131,072 taps
+        * **176.4 / 192 kHz:** 262,144 taps
+        * **352.8 / 384 kHz:** 524,288 taps
+
+        *Note: Higher Taps count causes more latency, but provides better audio precision.*
+        """),
+    ], open=True)
+
+    defaults = load_config()
+    hc_options = ["Built-in ('not Dr Toole')", "Upload Custom..."]
+
+    fs_options = [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000]
+    taps_options = [2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288]
+
+    inputs_list = [
+        file_upload("Measurement L (.txt)", name='file_l', accept='.txt', placeholder="Choose Left Channel measurement"),
+        file_upload("Measurement R (.txt)", name='file_r', accept='.txt', placeholder="Choose Right Channel measurement"),
+        
+        select("Output Format", options=['WAV', 'CSV'], value=defaults['fmt'], name='fmt'),
+        radio("Channel Layout", options=['Mono (Separate files)', 'Stereo (Single file)'], value=defaults['layout'], name='layout'),
+        
+        select("Sample Rate", options=fs_options, value=defaults['fs'], name='fs', type=NUMBER, help_text="Remember to increase Taps for higher rates!"),
+        select("Taps", options=taps_options, value=defaults['taps'], name='taps', type=NUMBER, help_text="Rec: 65k @ 48kHz, 131k @ 96kHz..."),
+        
+        input("Global Gain (dB)", value=defaults['gain'], type=FLOAT, name='gain'),
+        
+        select("Smoothing Type", options=['Standard 1/48 oct', 'Psychoacoustic'], value=defaults.get('smoothing_type', 'Psychoacoustic'), name='smoothing_type'),
+        input("FDW Cycles", value=defaults.get('fdw_cycles', 15), type=FLOAT, name='fdw_cycles'),
+
+        select("House Curve Mode", options=hc_options, value=defaults['hc_mode'], name='hc_mode'),
+        file_upload("Custom House Curve (Optional)", name='hc_custom_file', accept='.txt', help_text="Required if 'Upload Custom...' mode is selected above."),
+        
+        checkbox("Correction Mode", options=['Enable Frequency Response Correction'], value=defaults['mag_correct'], name='mag_correct'),
+        
+        input("EQ Range: Min Freq (Hz)", value=defaults['hc_min'], type=FLOAT, name='hc_min', help_text="Start frequency for EQ application"),
+        input("EQ Range: Max Freq (Hz)", value=defaults['hc_max'], type=FLOAT, name='hc_max', help_text="End frequency for EQ application"),
+        
+        input("Reference: Min Freq (Hz)", value=defaults.get('ref_min', 500), type=FLOAT, name='ref_min', help_text="Range for Target Level matching"),
+        input("Reference: Max Freq (Hz)", value=defaults.get('ref_max', 2000), type=FLOAT, name='ref_max', help_text="End frequency for level calculation (Target match)"),
+        
+        input("Max Boost (dB)", value=defaults['max_boost'], type=FLOAT, name='max_boost', help_text=f"Max safe boost: {MAX_SAFE_BOOST} dB"),
+        
+        checkbox("High Pass Filter", options=['Enable'], value=defaults['hpf_enable'], name='hpf_enable'),
+        input("HPF Freq (Hz)", value=defaults['hpf_freq'], type=FLOAT, name='hpf_freq', placeholder="e.g. 20"), 
+        select("HPF Slope (dB/oct)", options=[6, 12, 18, 24, 36, 48], value=defaults['hpf_slope'], type=NUMBER, name='hpf_slope')
+    ]
+
+    slope_opts = [6, 12, 18, 24, 36, 48]
+    for i in range(1, 6):
+        label_txt = f"XO {i} Freq (Hz)"
+        if i == 1: label_txt += " (Phase Linearization)"
+        inputs_list.append(input(label_txt, value=defaults[f'xo{i}_f'], name=f'xo{i}_f', type=FLOAT, placeholder="Leave empty if unused"))
+        inputs_list.append(select(f"XO {i} Slope (dB/oct)", options=slope_opts, value=defaults[f'xo{i}_s'], name=f'xo{i}_s'))
+
+    data = input_group("Filter Settings", inputs_list)
+    save_config(data)
+
+    try:
+        put_processbar('bar')
+        put_scope('status_area')
+        set_processbar('bar', 0.1)
+        update_status("Reading files...")
+
+        if not data['file_l'] or not data['file_r']:
+            put_error("Error: Please upload both Left and Right measurement files.")
+            return
+
+        freqs_l, mags_l, phases_l = parse_measurements_from_bytes(data['file_l']['content'])
+        freqs_r, mags_r, phases_r = parse_measurements_from_bytes(data['file_r']['content'])
+
+        if freqs_l is None or freqs_r is None:
+            put_error("Error: Could not parse measurement files.")
+            return
+
+        hc_freqs, hc_mags = None, None
+        if data['hc_mode'] == "Built-in ('not Dr Toole')":
+            hc_freqs, hc_mags = get_default_house_curve()
+        elif data['hc_mode'] == "Upload Custom...":
+            if not data['hc_custom_file']:
+                put_error("Error: 'Upload Custom...' selected but no file uploaded.")
+                return
+            hc_freqs, hc_mags = parse_house_curve_from_bytes(data['hc_custom_file']['content'])
+            if hc_freqs is None:
+                put_error("Error: Invalid Custom House Curve file.")
+                return
+
+        if hc_freqs is None:
+            data['hc_min'], data['hc_max'] = 0, 0
+
+        set_processbar('bar', 0.4)
+        update_status("Calculating Hi-Res filters...")
+        
+        do_mag_correct = 'Enable Frequency Response Correction' in data['mag_correct']
+        crossovers = []
+        for i in range(1, 6):
+            if data[f'xo{i}_f']:
+                crossovers.append({'freq': float(data[f'xo{i}_f']), 'order': int(data[f'xo{i}_s']) // 6})
+
+        hpf_settings = None
+        if 'Enable' in data['hpf_enable'] and data['hpf_freq']:
+            hpf_settings = {'enabled': True, 'freq': data['hpf_freq'], 'order': data['hpf_slope'] // 6}
+
+        c_min = (find_zero_crossing_raw(freqs_l, phases_l) + find_zero_crossing_raw(freqs_r, phases_r)) / 2
+        c_max = (find_closest_to_zero_raw(freqs_l, phases_l) + find_closest_to_zero_raw(freqs_r, phases_r)) / 2
+        
+        smoothing_mode = data.get('smoothing_type', 'Standard 1/48 oct')
+        if 'Psychoacoustic' in smoothing_mode: smoothing_mode = 'Psychoacoustic'
+        else: smoothing_mode = 'Standard'
+        
+        fdw = float(data.get('fdw_cycles', 15))
+
+        l_imp, l_min, l_max = generate_filter(
+            freqs_l, mags_l, phases_l, crossovers, c_min, c_max,
+            data['hc_min'], data['hc_max'], data['ref_min'], data['ref_max'],
+            hc_freqs, hc_mags, data['fs'], data['taps'],
+            FINE_TUNE_LIMIT, data['max_boost'], data['gain'], hpf_settings, do_mag_correct,
+            smoothing_mode, fdw
+        )
+        r_imp, r_min, r_max = generate_filter(
+            freqs_r, mags_r, phases_r, crossovers, c_min, c_max,
+            data['hc_min'], data['hc_max'], data['ref_min'], data['ref_max'],
+            hc_freqs, hc_mags, data['fs'], data['taps'],
+            FINE_TUNE_LIMIT, data['max_boost'], data['gain'], hpf_settings, do_mag_correct,
+            smoothing_mode, fdw
+        )
+
+        set_processbar('bar', 0.8)
+
+        now = datetime.now()
+        ts = now.strftime('%d%m%y_%H%M')
+        ext = ".wav" if data['fmt'] == 'WAV' else ".csv"
+        is_stereo = 'Stereo' in data['layout']
+        
+        freq_str = f"{data['fs']/1000:.1f}k" if data['fs'] > 1000 else f"{data['fs']}Hz"
+        
+        fn_l = f"L_corr_{freq_str}_{ts}{ext}"
+        fn_r = f"R_corr_{freq_str}_{ts}{ext}"
+        fn_s = f"Stereo_corr_{freq_str}_{ts}{ext}"
+        fn_sum = f"Summary_{ts}.txt"
+
+        if data['fmt'] == 'WAV':
+            if is_stereo:
+                scipy.io.wavfile.write(fn_s, data['fs'], np.column_stack((l_imp, r_imp)).astype(np.float32))
+                put_success(f"Saved: {fn_s}")
+            else:
+                scipy.io.wavfile.write(fn_l, data['fs'], l_imp.astype(np.float32))
+                scipy.io.wavfile.write(fn_r, data['fs'], r_imp.astype(np.float32))
+                put_success(f"Saved: {fn_l}, {fn_r}")
+        else:
+            if is_stereo:
+                np.savetxt(fn_s, np.column_stack((l_imp, r_imp)), fmt='%.18f', delimiter=' ')
+                put_success(f"Saved: {fn_s}")
+            else:
+                np.savetxt(fn_l, l_imp, fmt='%.18f')
+                np.savetxt(fn_r, r_imp, fmt='%.18f')
+                put_success(f"Saved: {fn_l}, {fn_r}")
+
+        settings_dict = data.copy()
+        settings_dict['Magnitude Correction'] = "Enabled" if do_mag_correct else "Disabled"
+        settings_dict['Crossovers'] = str(crossovers)
+        settings_dict['Phase Range'] = f"{c_min:.0f}-{c_max:.0f} Hz"
+        save_summary(fn_sum, settings_dict, {'gd_min': l_min, 'gd_max': l_max}, {'gd_min': r_min, 'gd_max': r_max})
+        put_info(f"Summary saved to {fn_sum}")
+        
+        set_processbar('bar', 0.9)
+        update_status("Generating plots...")
+        
+        try:
+            img_l = generate_prediction_plot(freqs_l, mags_l, phases_l, l_imp, data['fs'], "Left Channel")
+            img_r = generate_prediction_plot(freqs_r, mags_r, phases_r, r_imp, data['fs'], "Right Channel")
+            
+            if img_l and img_r:
+                put_tabs([
+                    {'title': 'Left Channel', 'content': put_image(img_l)},
+                    {'title': 'Right Channel', 'content': put_image(img_r)}
+                ])
+            else:
+                put_error("Could not generate plots.")
+        except Exception as e:
+            put_error(f"Failed to generate plots: {e}")
+            
+        set_processbar('bar', 1.0)
+        update_status("Done!")
+        put_markdown("### Analysis Complete. You can close this window.")
+        
+    except Exception as e:
+        put_error(f"Unexpected Error: {e}")
+    finally:
+        pass
+
+if __name__ == '__main__':
+    start_server(main, port=8080, debug=True, auto_open_webbrowser=True)
